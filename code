@@ -1,0 +1,221 @@
+# 📘 NOTEBOOK 01 — Bronze Layer (Batch Ingestion)
+
+### `01_bronze_ingestion.py`
+
+```python
+# Databricks Notebook: Bronze Layer Ingestion
+
+bronze_path = "/databricks-datasets/retail-data/by-day/*.csv"
+
+bronze_df = (
+    spark.read
+    .option("header", "true")
+    .option("inferSchema", "true")
+    .csv(bronze_path)
+)
+
+bronze_df.write.format("delta") \
+    .mode("append") \
+    .saveAsTable("bronze_retail_sales")
+
+print("Bronze ingestion completed")
+```
+
+---
+
+# 📘 NOTEBOOK 02 — Silver Layer (Cleaning + CDC)
+
+### `02_silver_transformations.py`
+
+```python
+from pyspark.sql.functions import col
+from delta.tables import DeltaTable
+
+source_df = spark.table("bronze_retail_sales")
+
+clean_df = (
+    source_df
+    .filter(col("Quantity") > 0)
+    .filter(col("UnitPrice") > 0)
+    .dropna(subset=["CustomerID"])
+)
+
+if spark.catalog.tableExists("silver_retail_sales"):
+    target = DeltaTable.forName(spark, "silver_retail_sales")
+
+    target.alias("t").merge(
+        clean_df.alias("s"),
+        "t.InvoiceNo = s.InvoiceNo AND t.StockCode = s.StockCode"
+    ).whenMatchedUpdateAll() \
+     .whenNotMatchedInsertAll() \
+     .execute()
+else:
+    clean_df.write.format("delta") \
+        .mode("overwrite") \
+        .saveAsTable("silver_retail_sales")
+
+print("Silver layer updated")
+```
+
+---
+
+# 📘 NOTEBOOK 03 — Gold Layer (Business Aggregates)
+
+### `03_gold_aggregations.py`
+
+```python
+from pyspark.sql.functions import sum, count
+
+gold_df = (
+    spark.table("silver_retail_sales")
+    .groupBy("Country")
+    .agg(
+        sum(col("Quantity") * col("UnitPrice")).alias("total_revenue"),
+        count("InvoiceNo").alias("transactions")
+    )
+)
+
+gold_df.write.format("delta") \
+    .mode("overwrite") \
+    .saveAsTable("gold_country_sales")
+
+print("Gold layer created")
+```
+
+---
+
+# 📘 NOTEBOOK 04 — Data Quality Checks (SQL)
+
+### `04_data_quality_checks.sql`
+
+```sql
+-- Null Customer Check
+SELECT COUNT(*) AS null_customers
+FROM silver_retail_sales
+WHERE CustomerID IS NULL;
+
+-- Duplicate Invoice Check
+SELECT InvoiceNo, COUNT(*) AS duplicates
+FROM silver_retail_sales
+GROUP BY InvoiceNo
+HAVING COUNT(*) > 1;
+
+-- Negative Value Check
+SELECT COUNT(*) AS invalid_rows
+FROM silver_retail_sales
+WHERE Quantity <= 0 OR UnitPrice <= 0;
+```
+
+---
+
+# 📘 NOTEBOOK 05 — File-Based Streaming
+
+### `05_streaming_pipeline.py`
+
+```python
+schema = spark.table("bronze_retail_sales").schema
+
+stream_df = (
+    spark.readStream
+    .schema(schema)
+    .option("header", "true")
+    .csv("/databricks-datasets/retail-data/by-day/")
+)
+
+stream_df.writeStream \
+    .format("delta") \
+    .outputMode("append") \
+    .option("checkpointLocation", "/tmp/retail_stream_chk") \
+    .table("bronze_retail_sales_stream")
+```
+
+---
+
+# 📘 NOTEBOOK 06 — ML Training with MLflow
+
+### `06_ml_training_mlflow.py`
+
+```python
+import mlflow
+from pyspark.sql.functions import sum
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.regression import RandomForestRegressor
+
+features_df = (
+    spark.table("silver_retail_sales")
+    .groupBy("InvoiceNo")
+    .agg(
+        sum("Quantity").alias("qty"),
+        sum("UnitPrice").alias("price")
+    )
+    .withColumn("label", col("qty") * col("price"))
+)
+
+assembler = VectorAssembler(
+    inputCols=["qty", "price"],
+    outputCol="features"
+)
+
+final_df = assembler.transform(features_df)
+
+train, test = final_df.randomSplit([0.8, 0.2])
+
+with mlflow.start_run():
+    rf = RandomForestRegressor(numTrees=50)
+    model = rf.fit(train)
+    mlflow.spark.log_model(model, "retail_rf_model")
+
+print("ML model trained and logged")
+```
+
+---
+
+# 📘 NOTEBOOK 07 — Model Inference & Evaluation
+
+### `07_model_inference.py`
+
+```python
+from pyspark.ml.evaluation import RegressionEvaluator
+
+predictions = model.transform(test)
+
+evaluator = RegressionEvaluator(
+    labelCol="label",
+    predictionCol="prediction",
+    metricName="rmse"
+)
+
+rmse = evaluator.evaluate(predictions)
+print(f"RMSE: {rmse}")
+```
+
+---
+
+# 📊 SQL Dashboard Queries
+
+### `dashboards/sql_dashboard_queries.sql`
+
+```sql
+SELECT
+  Country,
+  total_revenue,
+  transactions,
+  total_revenue / transactions AS avg_order_value
+FROM gold_country_sales
+ORDER BY total_revenue DESC;
+```
+
+---
+
+# ⏱ Workflow Documentation
+
+### `workflows/etl_job_structure.md`
+
+```md
+Databricks Workflow:
+1. 01_bronze_ingestion
+2. 02_silver_transformations
+3. 03_gold_aggregations
+
+Schedule: Daily
+```
