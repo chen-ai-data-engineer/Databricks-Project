@@ -1,0 +1,18 @@
+databricks-retail-lakehouse/
+│
+├── notebooks/
+│   ├── 01_bronze_ingestion.py
+│   ├── 02_silver_transformations.py
+│   ├── 03_gold_aggregations.py
+│   ├── 04_data_quality_checks.sql
+│   ├── 05_streaming_pipeline.py
+│   ├── 06_ml_training_mlflow.py
+│   ├── 07_model_inference.py
+│
+├── workflows/
+│   └── etl_job_structure.md
+│
+├── dashboards/
+│   └── sql_dashboard_queries.sql
+│
+├── README.md
